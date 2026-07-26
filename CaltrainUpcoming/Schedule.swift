@@ -13,19 +13,48 @@ import Foundation
 // its fields. `let` means immutable (like `const`); `var` means mutable.
 struct Schedule: Codable {
     let source: String
-    let service: String
+    let services: [String]          // service modes present in the data
     let stations: [String]          // [String] is an array of String (std::vector<std::string>)
     let transferStation: String
     let trains: [Train]
+}
+
+/// Which timetable a rider is looking at. Caltrain publishes one weekday and
+/// one weekend calendar (Saturday and Sunday service are identical), so these
+/// two cases mirror the source data rather than being a simplification.
+// `String` raw values match the strings in schedule.json, which is what lets
+// Codable decode Train.service straight into this enum. `CaseIterable` gives
+// us `.allCases` for building the picker.
+enum ServiceDay: String, Codable, CaseIterable, Identifiable {
+    case weekday, weekend
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .weekday: return "Weekday"
+        case .weekend: return "Weekend"
+        }
+    }
+
+    /// The mode matching a given date, used to pick a sensible initial value.
+    static func forDate(_ date: Date) -> ServiceDay {
+        // Calendar.isDateInWeekend honors the user's locale, where the weekend
+        // isn't always Saturday/Sunday. Caltrain's timetable is Sat/Sun, so ask
+        // for the Gregorian weekday number instead of trusting the locale.
+        let weekday = Calendar(identifier: .gregorian).component(.weekday, from: date)
+        return (weekday == 1 || weekday == 7) ? .weekend : .weekday   // 1 = Sun, 7 = Sat
+    }
 }
 
 // `Identifiable` requires an `id` property. SwiftUI uses it to tell list items
 // apart efficiently (so it knows which row changed). Here `id` doubles as the
 // JSON-decoded train number, so we get Identifiable for free.
 struct Train: Codable, Identifiable {
-    let id: String          // train number, e.g. "805"
-    let direction: String   // "NB" or "SB"
-    let type: String        // Local / Limited / Express / South County Connector
+    let id: String            // train number, e.g. "805"
+    let service: ServiceDay   // which timetable this train belongs to
+    let direction: String     // "NB" or "SB"
+    let type: String          // Local / Limited / Express / South County
     let stops: [Stop]
 }
 
@@ -54,6 +83,9 @@ final class ScheduleStore: ObservableObject {
     /// Triple-slash `///` is a documentation comment (shows in Xcode's Quick Help).
     private(set) var order: [String: Int] = [:]
 
+    /// trains bucketed by timetable, so a search scans only the relevant ones
+    private var trainsByService: [ServiceDay: [Train]] = [:]
+
     // `init` is the constructor. Stored properties must all be initialized by the
     // time init finishes (the compiler enforces this).
     init() {
@@ -64,12 +96,25 @@ final class ScheduleStore: ObservableObject {
         // This is the idiomatic Swift "for index, value" loop.
         for (i, s) in schedule.stations.enumerated() { o[s] = i }
         self.order = o
+        // Group once at load rather than filtering on every keystroke — the
+        // trip finder walks the train list three times per search.
+        self.trainsByService = Dictionary(grouping: schedule.trains, by: \.service)
     }
 
     // Computed properties: these run their getter on each access; they expose
     // bits of `schedule` read-only. No parentheses because they take no args.
     var stations: [String] { schedule.stations }
     var transferStation: String { schedule.transferStation }
+
+    /// Trains running on the given timetable.
+    func trains(for service: ServiceDay) -> [Train] { trainsByService[service] ?? [] }
+
+    /// Stations any train calls at on the given timetable. The Gilroy branch is
+    /// weekday-only, so the weekend station list is genuinely shorter.
+    func stations(for service: ServiceDay) -> [String] {
+        let served = Set(trains(for: service).flatMap { $0.stops.map(\.station) })
+        return schedule.stations.filter(served.contains)
+    }
 
     // `static` = belongs to the type, not an instance (like a C++ static method).
     private static func loadFromBundle() -> Schedule {
@@ -130,7 +175,8 @@ struct TripFinder {
     /// transfer station when there is no direct service.
     // Note Swift's argument labels: callers write find(origin:dest:nowMin:windowMin:).
     // These labels are part of the function's name and improve call-site readability.
-    func find(origin: String, dest: String, nowMin: Int, windowMin: Int) -> [Trip] {
+    func find(origin: String, dest: String, nowMin: Int, windowMin: Int,
+              service: ServiceDay) -> [Trip] {
         // Multi-condition guard: bail out early if origin == dest, or if either
         // station isn't in the `order` map. Dictionary lookup returns an Optional
         // (the key might be absent), and `let oi = ...` unwraps it.
@@ -139,12 +185,15 @@ struct TripFinder {
         let goingSouth = di > oi
         // Ternary, same as C++: condition ? a : b
         let wantDir = goingSouth ? "SB" : "NB"
+        // Every leg below searches only this timetable's trains, so a weekday
+        // train can never be spliced onto a weekend one at the transfer.
+        let candidateTrains = store.trains(for: service)
 
         // ---- direct trains ----
         var direct: [Trip] = []
         // `for t in ... where <cond>` filters inline — only iterations where the
         // condition holds run the body. Cleaner than an `if` at the top of a loop.
-        for t in store.schedule.trains where t.direction == wantDir {
+        for t in candidateTrains where t.direction == wantDir {
             // Guard that this train actually serves both stations, in the right
             // order. `stop(t, origin)` returns Stop? (Optional); we unwrap dep/arr.
             // `indexOf(...)!` force-unwraps because, having passed `stop()`, we
@@ -166,7 +215,7 @@ struct TripFinder {
         // leg 1: origin -> transfer
         let leg1Dir = (store.order[xfer]! > oi) ? "SB" : "NB"
         var leg1s: [TripLeg] = []
-        for t in store.schedule.trains where t.direction == leg1Dir {
+        for t in candidateTrains where t.direction == leg1Dir {
             guard let dep = stop(t, origin), let arr = stop(t, xfer),
                   indexOf(origin, in: t)! < indexOf(xfer, in: t)! else { continue }
             leg1s.append(TripLeg(trainID: t.id, type: t.type, direction: t.direction,
@@ -175,7 +224,7 @@ struct TripFinder {
         // leg 2: transfer -> dest
         let leg2Dir = (di > store.order[xfer]!) ? "SB" : "NB"
         var leg2s: [TripLeg] = []
-        for t in store.schedule.trains where t.direction == leg2Dir {
+        for t in candidateTrains where t.direction == leg2Dir {
             guard let dep = stop(t, xfer), let arr = stop(t, dest),
                   indexOf(xfer, in: t)! < indexOf(dest, in: t)! else { continue }
             leg2s.append(TripLeg(trainID: t.id, type: t.type, direction: t.direction,
@@ -248,6 +297,23 @@ struct TripFinder {
 // `enum` with only static functions used as a namespace — a common Swift idiom.
 // Unlike a struct, an enum with no cases can't be instantiated, so it's a clean
 // "bag of related functions" (similar to a C++ namespace or a class of statics).
+/// Granularity of the "At time" departure picker.
+// A caseless enum used purely as a namespace for statics — the same trick
+// TimeFmt below uses. Because it has no cases it can never be instantiated.
+enum TimeStep {
+    static let minutes = 15
+
+    /// Rounds a minute-of-day to the nearest step, wrapping across midnight.
+    static func snap(_ minute: Int) -> Int {
+        let m = ((minute % 1440) + 1440) % 1440
+        // Integer division truncates, so add half a step first to round to
+        // nearest rather than always down. 23:53 rounds up to 1440, which the
+        // final modulo wraps back to 00:00.
+        let rounded = ((m + minutes / 2) / minutes) * minutes
+        return rounded % 1440
+    }
+}
+
 enum TimeFmt {
     static func clock(_ minute: Int) -> String {
         let m = ((minute % 1440) + 1440) % 1440

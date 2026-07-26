@@ -20,6 +20,15 @@ struct CaltrainUpcomingApp: App {
     // `private` is the same access keyword you know from C++.
     @StateObject private var store = ScheduleStore()
 
+    // SwiftUI's DatePicker exposes no minute-interval knob, so we reach through
+    // to the UIKit control it's built on. `.appearance()` sets a default for
+    // every UIDatePicker the app creates — the same proxy pattern UIKit has
+    // always used for global styling. This is why the departure-time wheel
+    // steps 00/15/30/45 instead of every minute.
+    init() {
+        UIDatePicker.appearance().minuteInterval = TimeStep.minutes
+    }
+
     // `body` is a computed property (no stored value — it runs code each time
     // it's read; the `{ }` is its getter, not a stored initializer).
     // `some Scene` is an "opaque return type": the caller just needs to know it

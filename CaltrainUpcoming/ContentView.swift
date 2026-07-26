@@ -31,6 +31,11 @@ struct ContentView: View {
     @AppStorage("departMode") private var departMode: DepartMode = .now
     @AppStorage("pickedMinutes") private var pickedMinutes = 8 * 60
 
+    // which timetable to search. Not persisted: on launch it should follow
+    // today's date rather than whatever the rider last browsed, so the default
+    // is computed here and only overridden for the current session.
+    @State private var service = ServiceDay.forDate(Date())
+
     // refresh the relative times every 30s
     // A Combine publisher that fires every 30s on the main thread. `.autoconnect()`
     // starts it automatically. We subscribe to it with `.onReceive` in `body`.
@@ -50,19 +55,37 @@ struct ContentView: View {
     private var pickedTimeBinding: Binding<Date> {
         Binding(
             get: {
+                // Snap on the way out too: a value stored by an older build (or
+                // restored from @AppStorage) may not sit on a step boundary, and
+                // the wheel can't display a position it has no row for.
+                let snapped = TimeStep.snap(pickedMinutes)
                 // Build a Date for today at the stored hour/minute. The call
                 // returns Date?; `?? Date()` falls back to now if it's nil.
-                Calendar.current.date(bySettingHour: pickedMinutes / 60,
-                                      minute: pickedMinutes % 60, second: 0, of: Date()) ?? Date()
+                return Calendar.current.date(bySettingHour: snapped / 60,
+                                             minute: snapped % 60, second: 0, of: Date()) ?? Date()
             },
-            set: { pickedMinutes = TimeFmt.minutes(from: $0) }  // $0 = the new Date the picker wrote
+            // $0 = the new Date the picker wrote. We snap here rather than trust
+            // the UIDatePicker appearance proxy — it's a global default that a
+            // future iOS could stop honoring, and this keeps the stored value
+            // correct either way.
+            set: { pickedMinutes = TimeStep.snap(TimeFmt.minutes(from: $0)) }
         )
     }
     // Re-runs the search whenever any input it reads (origin, dest, baseMin,
     // window) changes — because those are @State/@AppStorage, SwiftUI knows to
     // recompute `trips` and rebuild the views that use it.
     private var trips: [Trip] {
-        finder.find(origin: origin, dest: dest, nowMin: baseMin, windowMin: Int(window))
+        finder.find(origin: origin, dest: dest, nowMin: baseMin,
+                    windowMin: Int(window), service: service)
+    }
+
+    /// True when the chosen route can't work on this timetable at all — as
+    /// opposed to simply having no departure in the look-ahead window. The
+    /// Gilroy branch (Blossom Hill, Gilroy, …) is weekday-only, so this is
+    /// reachable with the app's own default route.
+    private var unservedOnThisDay: [String] {
+        let served = Set(store.stations(for: service))
+        return [origin, dest].filter { !served.contains($0) }
     }
 
     // `body` describes the whole screen. It's recomputed on every state change.
@@ -77,6 +100,7 @@ struct ContentView: View {
                 // "view builder", a special closure where each line is a subview.
                 VStack(spacing: 16) {
                     routeCard
+                    serviceCard
                     departCard
                     windowCard
                     resultsSection
@@ -154,6 +178,26 @@ struct ContentView: View {
 
     // MARK: departure time
 
+    // MARK: service day
+
+    private var serviceCard: some View {
+        HStack(spacing: 10) {
+            Text("Service").font(.subheadline.weight(.medium))
+            Picker("Service", selection: $service) {
+                // Build one segment per case instead of listing them by hand, so
+                // adding a mode later (holiday service) needs no change here.
+                ForEach(ServiceDay.allCases) { day in
+                    Text(day.label).tag(day)
+                }
+            }
+            .pickerStyle(.segmented)
+            .fixedSize()
+            Spacer(minLength: 0)
+        }
+        .padding()
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
+    }
+
     private var departCard: some View {
         HStack(spacing: 10) {
             Text("Depart").font(.subheadline.weight(.medium))
@@ -230,16 +274,30 @@ struct ContentView: View {
         }
     }
 
-    private var emptyState: some View {
+    @ViewBuilder private var emptyState: some View {
         VStack(spacing: 8) {
             Image(systemName: "tram").font(.largeTitle).foregroundStyle(.secondary)
-            // String interpolation pulls live values into the message.
-            Text("No trains from \(origin) to \(dest) in the next \(Int(window)) min")
-                .font(.subheadline).foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-            Text("Try widening the time window or swapping stations.")
-                .font(.caption).foregroundStyle(.tertiary)
-                .multilineTextAlignment(.center)
+            // Distinguish "nothing in this window" from "this station has no
+            // service at all today" — widening the window can't fix the latter,
+            // so suggesting it would send the rider in circles.
+            if !unservedOnThisDay.isEmpty {
+                // ListFormatter-free join: at most two stations, so this reads fine.
+                let names = unservedOnThisDay.joined(separator: " and ")
+                Text("\(names) has no \(service.label.lowercased()) service")
+                    .font(.subheadline).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                Text("The Gilroy branch runs weekdays only. Switch to \(ServiceDay.weekday.label) or pick another station.")
+                    .font(.caption).foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
+            } else {
+                // String interpolation pulls live values into the message.
+                Text("No trains from \(origin) to \(dest) in the next \(Int(window)) min")
+                    .font(.subheadline).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                Text("Try widening the time window or swapping stations.")
+                    .font(.caption).foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 40)
@@ -318,6 +376,17 @@ struct TripCard: View {
         return d
     }
     private var rideMin: Int { finder.minutesUntil(trip.arriveMin, from: trip.departMin) }
+    /// The countdown split into three stacked lines: a small word above the
+    /// number and the unit below it ("In" / "8" / "mins"). For a train that
+    /// already left, the word moves underneath ("3" / "mins" / "ago"), so the
+    /// number stays on the middle line in both cases and cards line up.
+    /// A tuple return — Swift's built-in way to hand back several values.
+    private var countdownParts: (above: String?, value: String, below: String?) {
+        if minsAway == 0 { return (nil, "Now", nil) }
+        let m = abs(minsAway)
+        let unit = m == 1 ? "min" : "mins"
+        return minsAway < 0 ? (nil, "\(m)", "\(unit) ago") : ("In", "\(m)", unit)
+    }
     /// green for the fastest trip, red for the slowest, blended in between
     private var durationColor: Color {
         // If all trips are the same length (no spread), just show green.
@@ -359,24 +428,39 @@ struct TripCard: View {
             // departure: live countdown, or clock time when searching a set time
             VStack(alignment: .leading, spacing: 1) {
                 if showCountdown {
-                    // Show "now", or the absolute minutes (sign handled by label below).
-                    Text(minsAway == 0 ? "now" : "\(abs(minsAway))")
+                    // Three stacked lines; the optional ones are omitted when nil.
+                    // `if let` unwraps an Optional — the body runs only when it
+                    // has a value, and `word` is the unwrapped String inside.
+                    if let word = countdownParts.above {
+                        Text(word).font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Text(countdownParts.value)
                         .font(.system(size: 22, weight: .bold, design: .rounded))
                         // grey out trips that already departed (minsAway < 0)
                         .foregroundStyle(minsAway < 0 ? Color.secondary : Color.accentColor)
-                    Text(minsAway == 0 ? "departing" : (minsAway < 0 ? "min ago" : "min"))
-                        .font(.caption2).foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                    if let word = countdownParts.below {
+                        Text(word).font(.caption2).foregroundStyle(.secondary)
+                    }
                 } else {
-                    // "At time" mode shows the clock time instead of a countdown.
-                    Text(TimeFmt.clock(trip.departMin))
+                    // "At time" mode has no countdown to show, and the departure
+                    // clock time is already in the depart → arrive row beside
+                    // this column — so show ride length here instead of
+                    // repeating it. Colored like the badge it replaces: green
+                    // for the fastest trip on screen, red for the slowest.
+                    Text(TimeFmt.duration(rideMin))
                         .font(.system(size: 16, weight: .bold, design: .rounded))
-                        .foregroundStyle(Color.accentColor)
-                        .lineLimit(1)                                   // never wrap the time...
+                        .monospacedDigit()
+                        .foregroundStyle(durationColor)
+                        .lineLimit(1)                                   // never wrap the duration...
                         .fixedSize(horizontal: true, vertical: false)   // ...size to fit it on one line
-                    Text("departs").font(.caption2).foregroundStyle(.secondary)
+                    Text("ride").font(.caption2).foregroundStyle(.secondary)
                 }
             }
-            .frame(width: 64, alignment: .leading)   // fixed column so cards align
+            // Fixed column so cards align. The countdown stacks vertically now,
+            // so this only has to fit "mins ago" and the "51 min" duration.
+            .frame(width: 68, alignment: .leading)
 
             // A thin vertical divider line drawn as a 1pt-wide rectangle.
             Rectangle()
@@ -396,12 +480,16 @@ struct TripCard: View {
                         .font(.subheadline.weight(.semibold)).monospacedDigit()
                         .lineLimit(1).fixedSize(horizontal: true, vertical: false)
                     // The color-coded duration badge (green=fast … red=slow).
-                    Text(TimeFmt.duration(rideMin))
-                        .font(.subheadline.weight(.bold)).monospacedDigit()
-                        .foregroundStyle(durationColor)
-                        .lineLimit(1).fixedSize(horizontal: true, vertical: false)
-                        .padding(.horizontal, 7).padding(.vertical, 2)
-                        .background(durationColor.opacity(0.15), in: Capsule())  // pill behind the text
+                    // Only in countdown mode: otherwise the left column is
+                    // already showing the duration and this would duplicate it.
+                    if showCountdown {
+                        Text(TimeFmt.duration(rideMin))
+                            .font(.subheadline.weight(.bold)).monospacedDigit()
+                            .foregroundStyle(durationColor)
+                            .lineLimit(1).fixedSize(horizontal: true, vertical: false)
+                            .padding(.horizontal, 7).padding(.vertical, 2)
+                            .background(durationColor.opacity(0.15), in: Capsule())  // pill behind the text
+                    }
                 }
                 // train badges; an arrow between them denotes the transfer
                 HStack(spacing: 6) {
@@ -559,27 +647,53 @@ struct StationPicker: View {
     // closes the sheet. `\.dismiss` is a key path into the environment values.
     @Environment(\.dismiss) private var dismiss
 
+    // Starred stations, persisted across launches and shared by both pickers
+    // (From and To) because they read the same @AppStorage key. @AppStorage only
+    // stores plain values, not a Set, so we keep one newline-joined string and
+    // convert at the edges — station names never contain newlines.
+    @AppStorage("favoriteStations") private var favoritesRaw = ""
+
+    private var favorites: Set<String> {
+        Set(favoritesRaw.split(separator: "\n").map(String.init))
+    }
+    private func toggleFavorite(_ s: String) {
+        var f = favorites
+        // `insert`/`remove` on a Set are the same idea as std::set's.
+        if f.contains(s) { f.remove(s) } else { f.insert(s) }
+        // Writing favoritesRaw republishes it, so the list re-sorts immediately.
+        favoritesRaw = f.sorted().joined(separator: "\n")
+    }
+
     // Filter the list by the search text. `localizedCaseInsensitiveContains`
     // does a user-friendly substring match.
     private var filtered: [String] {
         query.isEmpty ? stations
             : stations.filter { $0.localizedCaseInsensitiveContains(query) }
     }
+    // Split the matches into the two sections. Each `filter` keeps the original
+    // station order, so within a section the list stays in line order.
+    private var favoriteMatches: [String] { filtered.filter { favorites.contains($0) } }
+    private var otherMatches: [String] { filtered.filter { !favorites.contains($0) } }
 
     var body: some View {
         NavigationStack {
             // `List` is a scrollable, styled list (like UITableView). Here it
             // builds a row per filtered station; `id: \.self` uses the string
             // itself as the identity (fine because station names are unique).
-            List(filtered, id: \.self) { s in
-                Button {
-                    onPick(s)
-                } label: {
-                    HStack {
-                        Text(s).foregroundStyle(.primary)
-                        Spacer()
-                        // Checkmark next to the currently selected station.
-                        if s == selected { Image(systemName: "checkmark").foregroundStyle(Color.accentColor) }
+            List {
+                // Starred stations float to their own section at the top. The
+                // section only exists when something matches, so an empty header
+                // never shows up.
+                if !favoriteMatches.isEmpty {
+                    Section("Favorites") {
+                        ForEach(favoriteMatches, id: \.self) { row($0) }
+                    }
+                }
+                if !otherMatches.isEmpty {
+                    // Unlabeled section when there are no favorites, so the
+                    // plain list looks exactly as it did before.
+                    Section(favoriteMatches.isEmpty ? "" : "All stations") {
+                        ForEach(otherMatches, id: \.self) { row($0) }
                     }
                 }
             }
@@ -593,6 +707,37 @@ struct StationPicker: View {
                     Button("Done") { dismiss() }
                 }
             }
+        }
+    }
+
+    // One station row: tapping the name picks the station, tapping the star
+    // toggles the favorite. Two buttons in a single List row need an explicit
+    // button style — the default makes the whole row one tap target, so the
+    // star would also trigger the pick.
+    private func row(_ s: String) -> some View {
+        let isFavorite = favorites.contains(s)
+        return HStack(spacing: 12) {
+            Button {
+                onPick(s)
+            } label: {
+                HStack {
+                    Text(s).foregroundStyle(.primary)
+                    Spacer()
+                    // Checkmark next to the currently selected station.
+                    if s == selected { Image(systemName: "checkmark").foregroundStyle(Color.accentColor) }
+                }
+                .contentShape(Rectangle())   // whole width stays tappable
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                toggleFavorite(s)
+            } label: {
+                Image(systemName: isFavorite ? "star.fill" : "star")
+                    .foregroundStyle(isFavorite ? Color.yellow : Color.secondary)
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel(isFavorite ? "Remove \(s) from favorites" : "Add \(s) to favorites")
         }
     }
 }
