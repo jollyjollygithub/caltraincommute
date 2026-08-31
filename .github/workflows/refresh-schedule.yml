@@ -4,7 +4,7 @@ name: Refresh schedule
 # it when the timetable actually changed. The in-app "reload" then serves it.
 on:
   schedule:
-    - cron: "0 14 * * 1"   # Mondays 14:00 UTC (~6–7am Pacific)
+    - cron: "0 14 * * *"   # daily 14:00 UTC (~6–7am Pacific)
   workflow_dispatch: {}    # allow manual runs from the Actions tab
 
 permissions:
