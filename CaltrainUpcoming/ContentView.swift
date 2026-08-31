@@ -96,11 +96,13 @@ struct ContentView: View {
     /// "Schedule updated 2 hr ago", or a note that the built-in copy is in use.
     private var scheduleStatusText: String {
         guard let d = store.lastUpdated else { return "Using built-in schedule" }
-        // "in 0 seconds" reads badly for a fresh update; say "just now" under a minute.
-        if Date().timeIntervalSince(d) < 60 { return "Downloaded just now" }
-        let f = RelativeDateTimeFormatter()
-        f.unitsStyle = .abbreviated
-        return "Downloaded \(f.localizedString(for: d, relativeTo: Date()))"
+        let f = DateFormatter()
+        // Absolute "updated at" time of the last reload: just the clock time when
+        // it happened today, with the date prepended otherwise.
+        f.dateFormat = Calendar.current.isDateInToday(d)
+            ? "'Updated at' h:mm a"          // e.g. "Updated at 6:01 PM"
+            : "'Updated' MMM d 'at' h:mm a"  // e.g. "Updated Aug 29 at 5:30 PM"
+        return f.string(from: d)
     }
 
     /// The author's "schedule last updated" date, from the file's `generatedAt`

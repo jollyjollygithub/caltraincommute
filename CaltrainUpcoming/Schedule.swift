@@ -171,8 +171,13 @@ final class ScheduleStore: ObservableObject {
         // of an RAII cleanup / `finally`.
         defer { isUpdating = false }
         do {
+            // Note: raw.githubusercontent caches at the CDN edge for up to ~5 min
+            // (max-age=300) and ignores query strings, so a just-pushed schedule can
+            // take a few minutes to appear here — there's no client-side way to force
+            // past it. The local no-cache policy at least avoids reusing a copy this
+            // device already downloaded.
             var request = URLRequest(url: Self.remoteURL)
-            request.cachePolicy = .reloadIgnoringLocalCacheData   // always fetch fresh
+            request.cachePolicy = .reloadIgnoringLocalCacheData
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse else { throw UpdateError.noResponse }
             guard (200..<300).contains(http.statusCode) else { throw UpdateError.status(http.statusCode) }
@@ -470,5 +475,5 @@ enum TimeFmt {
 /// tracks the number of commits since v0.5. Kept in a compiled source file (not a
 /// standalone resource) so the string is available without reading the bundle.
 enum AppInfo {
-    static let version = "0.5.2"
+    static let version = "0.5.3"
 }
