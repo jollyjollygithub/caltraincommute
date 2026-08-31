@@ -22,6 +22,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: TEMP force failure (verifying the failure-issue path)
+        run: exit 1
+
       - name: Regenerate schedule.json
         run: python3 build_schedule.py
 
