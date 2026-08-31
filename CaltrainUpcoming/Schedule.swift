@@ -372,3 +372,13 @@ enum TimeFmt {
         return (c.hour ?? 0) * 60 + (c.minute ?? 0)
     }
 }
+
+// MARK: - App version
+
+/// The app's version, shown in the UI footer. Started at 0.5; the patch component
+/// is bumped automatically on every commit by `.githooks/pre-commit`, so 0.5.N
+/// tracks the number of commits since v0.5. Kept in a compiled source file (not a
+/// standalone resource) so the string is available without reading the bundle.
+enum AppInfo {
+    static let version = "0.5"
+}

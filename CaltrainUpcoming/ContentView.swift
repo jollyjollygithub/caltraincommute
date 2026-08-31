@@ -110,6 +110,12 @@ struct ContentView: View {
                     windowCard
                     resultsSection
                     linksCard
+                    // Small version label at the very bottom of the screen.
+                    Text("v\(AppInfo.version)")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 4)
                 }
                 .padding()   // a "modifier": returns a new view wrapping this one
                              // with padding. Modifiers chain, applying outward.
