@@ -1,5 +1,20 @@
 import Foundation
 
+// MARK: - Time zone
+
+/// Caltrain runs on Pacific time, and the schedule's minute-of-day values are
+/// Pacific wall-clock. Do every wall-clock calculation against this fixed zone
+/// rather than the device's, so countdowns and the weekday/weekend default stay
+/// correct even when the phone is set to another timezone.
+enum CaltrainClock {
+    static let timeZone = TimeZone(identifier: "America/Los_Angeles") ?? .current
+    static var calendar: Calendar {
+        var c = Calendar(identifier: .gregorian)
+        c.timeZone = timeZone
+        return c
+    }
+}
+
 // MARK: - Data model (decoded from schedule.json)
 // `// MARK:` is just a structured comment. Xcode shows MARK lines in its
 // jump bar / minimap, like section headers. The leading "-" draws a divider.
@@ -39,10 +54,10 @@ enum ServiceDay: String, Codable, CaseIterable, Identifiable {
 
     /// The mode matching a given date, used to pick a sensible initial value.
     static func forDate(_ date: Date) -> ServiceDay {
-        // Calendar.isDateInWeekend honors the user's locale, where the weekend
-        // isn't always Saturday/Sunday. Caltrain's timetable is Sat/Sun, so ask
-        // for the Gregorian weekday number instead of trusting the locale.
-        let weekday = Calendar(identifier: .gregorian).component(.weekday, from: date)
+        // Caltrain's timetable is Sat/Sun, so read the Gregorian weekday number in
+        // Caltrain's own timezone (not the device's locale/zone), which also keeps
+        // the choice right for a phone set to a different timezone near midnight.
+        let weekday = CaltrainClock.calendar.component(.weekday, from: date)
         return (weekday == 1 || weekday == 7) ? .weekend : .weekday   // 1 = Sun, 7 = Sat
     }
 }
@@ -138,9 +153,12 @@ final class ScheduleStore: ObservableObject {
 // MARK: - Trip results
 
 struct TripLeg: Identifiable {
-    // `UUID()` generates a unique id. `let id = UUID()` gives each leg a stable
-    // identity for SwiftUI lists. Note the type is inferred (no `: UUID` needed).
-    let id = UUID()
+    // Identity must be derived from the leg's *content*, not a fresh `UUID()`.
+    // `trips` is recomputed on every `body` pass (the 30s countdown ticker forces
+    // one), so a per-instance UUID changed each tick — SwiftUI then saw every card
+    // as brand new and reset its expanded/collapsed state. A train serves a given
+    // origin→dest once per run, so trainID + times is a stable, unique key.
+    var id: String { "\(trainID)|\(depart.min)|\(arrive.min)" }
     let trainID: String
     let type: String
     let direction: String
@@ -150,7 +168,9 @@ struct TripLeg: Identifiable {
 }
 
 struct Trip: Identifiable {
-    let id = UUID()
+    // Stable, content-derived id for the same reason as TripLeg (see above): the
+    // legs' ids uniquely identify the whole itinerary within a result set.
+    var id: String { legs.map(\.id).joined(separator: ">") }
     let legs: [TripLeg]
     // More computed properties. `legs.first!` returns the first element; the `!`
     // force-unwraps the Optional (we're certain a trip has >=1 leg). A force
@@ -206,14 +226,23 @@ struct TripFinder {
                 direction: t.direction, depart: dep, arrive: arr, allStops: t.stops)]))
         }
         let directWindowed = withinWindow(direct, nowMin: nowMin, windowMin: windowMin)
-        if !directWindowed.isEmpty { return directWindowed }
+        // If this route has direct service at all, only ever show direct trips: an
+        // empty window means "nothing soon", not "go build a transfer". Falling back
+        // on an empty *window* (rather than genuinely no direct service) is what
+        // produced wrong-way trips for station pairs on the same side of Diridon.
+        if !direct.isEmpty { return directWindowed }
 
         // ---- one transfer via the transfer station (San Jose Diridon) ----
+        // Only worthwhile when the transfer station actually lies *between* origin
+        // and dest; otherwise the two-seat ride would backtrack past one of them.
         let xfer = store.transferStation
-        guard origin != xfer, dest != xfer else { return directWindowed }
+        guard origin != xfer, dest != xfer,
+              let xi = store.order[xfer],
+              (oi < xi && xi < di) || (di < xi && xi < oi)
+        else { return directWindowed }
 
         // leg 1: origin -> transfer
-        let leg1Dir = (store.order[xfer]! > oi) ? "SB" : "NB"
+        let leg1Dir = (xi > oi) ? "SB" : "NB"
         var leg1s: [TripLeg] = []
         for t in candidateTrains where t.direction == leg1Dir {
             guard let dep = stop(t, origin), let arr = stop(t, xfer),
@@ -222,7 +251,7 @@ struct TripFinder {
                 depart: dep, arrive: arr, allStops: t.stops))
         }
         // leg 2: transfer -> dest
-        let leg2Dir = (di > store.order[xfer]!) ? "SB" : "NB"
+        let leg2Dir = (di > xi) ? "SB" : "NB"
         var leg2s: [TripLeg] = []
         for t in candidateTrains where t.direction == leg2Dir {
             guard let dep = stop(t, xfer), let arr = stop(t, dest),
@@ -335,9 +364,9 @@ enum TimeFmt {
         minutes(from: Date())   // Date() is "now" (like std::chrono::system_clock::now()).
     }
     static func minutes(from date: Date) -> Int {
-        // Calendar does the timezone-aware date math. We ask only for the hour
-        // and minute components of `date`.
-        let c = Calendar.current.dateComponents([.hour, .minute], from: date)
+        // Read the hour/minute in Caltrain's timezone so "now" is comparable to the
+        // schedule's Pacific times regardless of the device's own timezone.
+        let c = CaltrainClock.calendar.dateComponents([.hour, .minute], from: date)
         // `c.hour` is Optional (the component might be absent); `?? 0` is the
         // nil-coalescing operator: "use c.hour, or 0 if it's nil" (like value_or).
         return (c.hour ?? 0) * 60 + (c.minute ?? 0)

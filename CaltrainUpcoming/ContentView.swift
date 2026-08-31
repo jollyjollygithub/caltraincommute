@@ -35,6 +35,10 @@ struct ContentView: View {
     // today's date rather than whatever the rider last browsed, so the default
     // is computed here and only overridden for the current session.
     @State private var service = ServiceDay.forDate(Date())
+    // Whether the rider has overridden the service day this session. Until they do,
+    // the default keeps following the calendar — so an app left open across
+    // midnight into the weekend switches instead of showing stale weekday service.
+    @State private var userChoseService = false
 
     // refresh the relative times every 30s
     // A Combine publisher that fires every 30s on the main thread. `.autoconnect()`
@@ -59,10 +63,11 @@ struct ContentView: View {
                 // restored from @AppStorage) may not sit on a step boundary, and
                 // the wheel can't display a position it has no row for.
                 let snapped = TimeStep.snap(pickedMinutes)
-                // Build a Date for today at the stored hour/minute. The call
-                // returns Date?; `?? Date()` falls back to now if it's nil.
-                return Calendar.current.date(bySettingHour: snapped / 60,
-                                             minute: snapped % 60, second: 0, of: Date()) ?? Date()
+                // Build a Date for today at the stored hour/minute, interpreted in
+                // Caltrain's timezone to match how `minutes(from:)` reads it back.
+                // The call returns Date?; `?? Date()` falls back to now if it's nil.
+                return CaltrainClock.calendar.date(bySettingHour: snapped / 60,
+                                                   minute: snapped % 60, second: 0, of: Date()) ?? Date()
             },
             // $0 = the new Date the picker wrote. We snap here rather than trust
             // the UIDatePicker appearance proxy — it's a global default that a
@@ -118,7 +123,10 @@ struct ContentView: View {
             .sheet(item: $picking) { field in
                 StationPicker(
                     title: field == .origin ? "From" : "To",
-                    stations: store.stations,
+                    // Only offer stations with service on the chosen timetable, so
+                    // the picker never lists a station that can't return a result
+                    // (e.g. the weekday-only Gilroy branch while on Weekend).
+                    stations: store.stations(for: service),
                     selected: field == .origin ? origin : dest
                 ) { chosen in   // trailing closure = the onPick callback
                     if field == .origin { origin = chosen } else { dest = chosen }
@@ -126,8 +134,15 @@ struct ContentView: View {
                 }
             }
         }
-        // Subscribe to the ticker; each tick updates nowMin, refreshing countdowns.
-        .onReceive(ticker) { _ in nowMin = TimeFmt.nowMinutes() }   // `_` = ignore the value
+        // Subscribe to the ticker; each tick updates nowMin, refreshing countdowns,
+        // and re-follows the calendar's service day unless the rider overrode it.
+        .onReceive(ticker) { _ in
+            nowMin = TimeFmt.nowMinutes()
+            if !userChoseService {
+                let today = ServiceDay.forDate(Date())
+                if service != today { service = today }
+            }
+        }
         .onAppear { nowMin = TimeFmt.nowMinutes() }                 // runs when the view appears
     }
 
@@ -183,7 +198,12 @@ struct ContentView: View {
     private var serviceCard: some View {
         HStack(spacing: 10) {
             Text("Service").font(.subheadline.weight(.medium))
-            Picker("Service", selection: $service) {
+            // Custom binding so a manual pick sets `userChoseService`, which stops
+            // the ticker from auto-following the date over the top of their choice.
+            Picker("Service", selection: Binding(
+                get: { service },
+                set: { service = $0; userChoseService = true }
+            )) {
                 // Build one segment per case instead of listing them by hand, so
                 // adding a mode later (holiday service) needs no change here.
                 ForEach(ServiceDay.allCases) { day in

@@ -100,11 +100,14 @@ def build(zf):
     stations = [parents[sid] for sid in station_order]
 
     # --- services -------------------------------------------------------
-    # Classify each calendar row by whether it runs on Saturday/Sunday.
+    # Classify each calendar row: it's weekday service if it runs on ANY weekday,
+    # otherwise weekend. Keying off weekday-presence (rather than "runs Sat/Sun")
+    # avoids mislabeling a hypothetical Mon–Sat calendar as weekend-only.
+    weekdays = ("monday", "tuesday", "wednesday", "thursday", "friday")
     service_mode = {}
     for row in calendar:
-        weekend = row["saturday"] == "1" or row["sunday"] == "1"
-        service_mode[row["service_id"]] = WEEKEND if weekend else WEEKDAY
+        runs_weekday = any(row[d] == "1" for d in weekdays)
+        service_mode[row["service_id"]] = WEEKDAY if runs_weekday else WEEKEND
     if set(service_mode.values()) != {WEEKDAY, WEEKEND}:
         raise SystemExit(f"expected both calendars, got: {service_mode}")
 
