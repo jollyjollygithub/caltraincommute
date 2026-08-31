@@ -1,5 +1,6 @@
 {
  "source": "Caltrain GTFS static feed (Trillium), UTC: 10-Jun-2026 22:25",
+ "generatedAt": "2026-08-30",
  "services": [
   "weekday",
   "weekend"

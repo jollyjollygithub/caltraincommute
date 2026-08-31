@@ -24,6 +24,7 @@ import os
 import sys
 import urllib.request
 import zipfile
+from datetime import date
 
 FEED_URL = "https://data.trilliumtransit.com/gtfs/caltrain-ca-us/caltrain-ca-us.zip"
 OUT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -173,6 +174,9 @@ def build(zf):
 
     return {
         "source": f"Caltrain GTFS static feed (Trillium), {version}",
+        # The day this file was regenerated (i.e. when the author last updated the
+        # schedule), ISO 8601. The app shows it so riders know how fresh the data is.
+        "generatedAt": date.today().isoformat(),
         "services": [WEEKDAY, WEEKEND],
         "stations": stations,
         "transferStation": TRANSFER_STATION,

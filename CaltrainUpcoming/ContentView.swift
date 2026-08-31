@@ -97,10 +97,23 @@ struct ContentView: View {
     private var scheduleStatusText: String {
         guard let d = store.lastUpdated else { return "Using built-in schedule" }
         // "in 0 seconds" reads badly for a fresh update; say "just now" under a minute.
-        if Date().timeIntervalSince(d) < 60 { return "Schedule updated just now" }
+        if Date().timeIntervalSince(d) < 60 { return "Downloaded just now" }
         let f = RelativeDateTimeFormatter()
         f.unitsStyle = .abbreviated
-        return "Schedule updated \(f.localizedString(for: d, relativeTo: Date()))"
+        return "Downloaded \(f.localizedString(for: d, relativeTo: Date()))"
+    }
+
+    /// The author's "schedule last updated" date, from the file's `generatedAt`
+    /// stamp, formatted for display. nil if the file predates the field.
+    private var scheduleDataDateText: String? {
+        guard let iso = store.schedule.generatedAt else { return nil }
+        let parser = DateFormatter()
+        parser.dateFormat = "yyyy-MM-dd"
+        parser.timeZone = CaltrainClock.timeZone
+        guard let date = parser.date(from: iso) else { return nil }
+        let out = DateFormatter()
+        out.dateStyle = .medium   // e.g. "Aug 30, 2026"
+        return out.string(from: date)
     }
 
     /// Footer at the bottom of the screen: any update error, the schedule status,
@@ -109,6 +122,9 @@ struct ContentView: View {
         VStack(spacing: 2) {
             if let error = store.updateError {
                 Text(error).foregroundStyle(.orange)
+            }
+            if let dataDate = scheduleDataDateText {
+                Text("Schedule updated \(dataDate)")
             }
             Text(scheduleStatusText)
             Text("v\(AppInfo.version)")
