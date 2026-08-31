@@ -475,5 +475,5 @@ enum TimeFmt {
 /// tracks the number of commits since v0.5. Kept in a compiled source file (not a
 /// standalone resource) so the string is available without reading the bundle.
 enum AppInfo {
-    static let version = "0.5.4"
+    static let version = "0.5.5"
 }
