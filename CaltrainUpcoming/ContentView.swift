@@ -100,8 +100,8 @@ struct ContentView: View {
         // Absolute "updated at" time of the last reload: just the clock time when
         // it happened today, with the date prepended otherwise.
         f.dateFormat = Calendar.current.isDateInToday(d)
-            ? "'Updated at' h:mm a"          // e.g. "Updated at 6:01 PM"
-            : "'Updated' MMM d 'at' h:mm a"  // e.g. "Updated Aug 29 at 5:30 PM"
+            ? "'Downloaded local schedule at' h:mm a"          // e.g. "Updated at 6:01 PM"
+            : "'Downloaded local schedule at' MMM d 'at' h:mm a"  // e.g. "Updated Aug 29 at 5:30 PM"
         return f.string(from: d)
     }
 
