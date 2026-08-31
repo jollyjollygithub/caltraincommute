@@ -91,6 +91,23 @@ final class ScheduleStore: ObservableObject {
     // `private(set)` means: readable everywhere, but only settable inside this
     // class (public getter, private setter — a common C++ pattern done in one word).
     @Published private(set) var schedule: Schedule
+    /// True while a network reload is in flight (drives the refresh spinner).
+    @Published private(set) var isUpdating = false
+    /// When the on-disk schedule was last downloaded; nil means the bundled copy.
+    @Published private(set) var lastUpdated: Date?
+    /// A user-facing message when the last reload failed; nil when all is well.
+    @Published private(set) var updateError: String?
+
+    /// The public timetable published in this app's own repo — reloading pulls the
+    /// latest committed schedule.json straight from GitHub, so there's no separate
+    /// server to run. Freshness is whatever has been regenerated and pushed.
+    private static let remoteURL = URL(string:
+        "https://raw.githubusercontent.com/jollyjollygithub/caltraincommute/main/CaltrainUpcoming/schedule.json")!
+    /// Where a downloaded copy is cached; preferred over the bundle at launch.
+    private static var documentsURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("schedule.json")
+    }
 
     /// position of each station along the line, 0 = San Francisco … N = Gilroy
     /// `[String: Int]` is a dictionary (std::unordered_map<std::string,int>).
@@ -104,15 +121,22 @@ final class ScheduleStore: ObservableObject {
     // `init` is the constructor. Stored properties must all be initialized by the
     // time init finishes (the compiler enforces this).
     init() {
-        // `Self` (capital S) means "this type" — calls the static method below.
-        self.schedule = Self.loadFromBundle()
+        // Prefer a previously-downloaded copy; otherwise the bundled schedule.
+        let initial = Self.loadInitial()
+        self.schedule = initial.schedule
+        self.lastUpdated = initial.lastUpdated
+        rebuildIndexes()
+    }
+
+    /// Rebuild the derived lookups whenever `schedule` changes: station order and
+    /// the per-timetable train buckets the finder scans.
+    private func rebuildIndexes() {
         var o: [String: Int] = [:]
         // `.enumerated()` yields (index, element) pairs; we destructure into (i, s).
-        // This is the idiomatic Swift "for index, value" loop.
         for (i, s) in schedule.stations.enumerated() { o[s] = i }
         self.order = o
-        // Group once at load rather than filtering on every keystroke — the
-        // trip finder walks the train list three times per search.
+        // Group once rather than filtering on every keystroke — the trip finder
+        // walks the train list three times per search.
         self.trainsByService = Dictionary(grouping: schedule.trains, by: \.service)
     }
 
@@ -131,6 +155,54 @@ final class ScheduleStore: ObservableObject {
         return schedule.stations.filter(served.contains)
     }
 
+    /// Download the latest schedule from GitHub, validate it, cache it to disk, and
+    /// swap it in. On any failure the current schedule is kept untouched and
+    /// `updateError` is set. `@MainActor` so the `@Published` writes are on the main
+    /// thread; the network await suspends off it.
+    @MainActor
+    func reload() async {
+        guard !isUpdating else { return }   // ignore taps while one is in flight
+        isUpdating = true
+        updateError = nil
+        // `defer` runs when the function exits by any path — the Swift equivalent
+        // of an RAII cleanup / `finally`.
+        defer { isUpdating = false }
+        do {
+            var request = URLRequest(url: Self.remoteURL)
+            request.cachePolicy = .reloadIgnoringLocalCacheData   // always fetch fresh
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else { throw UpdateError.noResponse }
+            guard (200..<300).contains(http.statusCode) else { throw UpdateError.status(http.statusCode) }
+            // Validate by decoding BEFORE persisting or applying — a truncated or
+            // corrupt download must never replace a working schedule.
+            let decoded = try JSONDecoder().decode(Schedule.self, from: data)
+            guard !decoded.stations.isEmpty, !decoded.trains.isEmpty else { throw UpdateError.empty }
+            try data.write(to: Self.documentsURL, options: .atomic)
+            self.schedule = decoded
+            rebuildIndexes()
+            self.lastUpdated = Date()
+        } catch is CancellationError {
+            // A pull-to-refresh that was released/interrupted before the fetch
+            // finished — not a real failure, so leave the schedule and state as is.
+        } catch let error as URLError where error.code == .cancelled {
+            // Same interruption, surfaced by URLSession as a cancelled URLError.
+        } catch {
+            self.updateError = Self.message(for: error)
+        }
+    }
+
+    /// Prefer a previously-downloaded schedule; fall back to the bundled one.
+    private static func loadInitial() -> (schedule: Schedule, lastUpdated: Date?) {
+        let docs = documentsURL
+        if let data = try? Data(contentsOf: docs),
+           let decoded = try? JSONDecoder().decode(Schedule.self, from: data) {
+            let modified = (try? FileManager.default
+                .attributesOfItem(atPath: docs.path))?[.modificationDate] as? Date
+            return (decoded, modified)
+        }
+        return (loadFromBundle(), nil)
+    }
+
     // `static` = belongs to the type, not an instance (like a C++ static method).
     private static func loadFromBundle() -> Schedule {
         // `guard ... else { }` is "verify or bail". If any binding fails, the
@@ -147,6 +219,21 @@ final class ScheduleStore: ObservableObject {
             let decoded = try? JSONDecoder().decode(Schedule.self, from: data)
         else { fatalError("schedule.json missing or unreadable in app bundle") }  // hard crash; like assert+abort
         return decoded
+    }
+
+    private enum UpdateError: Error {
+        case noResponse, status(Int), empty
+    }
+
+    /// Turn any reload failure into a short, user-facing sentence.
+    private static func message(for error: Error) -> String {
+        switch error {
+        case UpdateError.status(let code): return "Update failed (server \(code))."
+        case UpdateError.empty:            return "Update failed: the schedule looked empty."
+        case UpdateError.noResponse:       return "Update failed: no response from the server."
+        case is DecodingError:             return "Update failed: the downloaded schedule was unreadable."
+        default:                           return "Couldn’t reach the schedule server. Check your connection."
+        }
     }
 }
 
@@ -380,5 +467,5 @@ enum TimeFmt {
 /// tracks the number of commits since v0.5. Kept in a compiled source file (not a
 /// standalone resource) so the string is available without reading the bundle.
 enum AppInfo {
-    static let version = "0.5"
+    static let version = "0.5.1"
 }

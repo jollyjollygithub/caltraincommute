@@ -93,6 +93,48 @@ struct ContentView: View {
         return [origin, dest].filter { !served.contains($0) }
     }
 
+    /// "Schedule updated 2 hr ago", or a note that the built-in copy is in use.
+    private var scheduleStatusText: String {
+        guard let d = store.lastUpdated else { return "Using built-in schedule" }
+        // "in 0 seconds" reads badly for a fresh update; say "just now" under a minute.
+        if Date().timeIntervalSince(d) < 60 { return "Schedule updated just now" }
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .abbreviated
+        return "Schedule updated \(f.localizedString(for: d, relativeTo: Date()))"
+    }
+
+    /// Footer at the bottom of the screen: any update error, the schedule status,
+    /// and the app version.
+    @ViewBuilder private var scheduleFooter: some View {
+        VStack(spacing: 2) {
+            if let error = store.updateError {
+                Text(error).foregroundStyle(.orange)
+            }
+            Text(scheduleStatusText)
+            Text("v\(AppInfo.version)")
+        }
+        .font(.caption2)
+        .foregroundStyle(.tertiary)
+        .multilineTextAlignment(.center)
+        .frame(maxWidth: .infinity)
+        .padding(.top, 4)
+    }
+
+    /// Nav-bar button that pulls the latest schedule; shows a spinner while it runs.
+    @ViewBuilder private var refreshButton: some View {
+        Button {
+            Task { await store.reload() }
+        } label: {
+            if store.isUpdating {
+                ProgressView()
+            } else {
+                Image(systemName: "arrow.clockwise")
+            }
+        }
+        .disabled(store.isUpdating)
+        .accessibilityLabel("Update schedule")
+    }
+
     // `body` describes the whole screen. It's recomputed on every state change.
     var body: some View {
         // NavigationStack provides the title bar and lets us present sheets/pushes.
@@ -110,18 +152,19 @@ struct ContentView: View {
                     windowCard
                     resultsSection
                     linksCard
-                    // Small version label at the very bottom of the screen.
-                    Text("v\(AppInfo.version)")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 4)
+                    scheduleFooter
                 }
                 .padding()   // a "modifier": returns a new view wrapping this one
                              // with padding. Modifiers chain, applying outward.
             }
             .background(Color(.systemGroupedBackground))
+            // Pull down anywhere on the list to fetch the latest schedule.
+            .refreshable { await store.reload() }
             .navigationBarTitleDisplayMode(.inline)
+            // A visible refresh control too, for discoverability.
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) { refreshButton }
+            }
             // `.sheet(item:)` presents a modal when `picking` becomes non-nil.
             // `$picking` passes a *Binding* (the `$` projects the wrapped value's
             // binding) so the sheet can set it back to nil on dismiss. The closure
