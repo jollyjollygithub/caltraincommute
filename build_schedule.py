@@ -24,7 +24,8 @@ import os
 import sys
 import urllib.request
 import zipfile
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 FEED_URL = "https://data.trilliumtransit.com/gtfs/caltrain-ca-us/caltrain-ca-us.zip"
 OUT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -35,6 +36,15 @@ TRANSFER_STATION = "San Jose Diridon"
 # weekend calendar covering both Saturday and Sunday, so a two-way split is
 # faithful to the data rather than a simplification we're imposing.
 WEEKDAY, WEEKEND = "weekday", "weekend"
+
+
+def generated_date():
+    """Today's date in Caltrain's timezone (Pacific), ISO 8601 — stable whether
+    this runs on a local Mac or a UTC CI runner."""
+    try:
+        return datetime.now(ZoneInfo("America/Los_Angeles")).date().isoformat()
+    except Exception:
+        return date.today().isoformat()  # fall back if tz data is unavailable
 
 
 def load_feed(source):
@@ -174,9 +184,11 @@ def build(zf):
 
     return {
         "source": f"Caltrain GTFS static feed (Trillium), {version}",
-        # The day this file was regenerated (i.e. when the author last updated the
-        # schedule), ISO 8601. The app shows it so riders know how fresh the data is.
-        "generatedAt": date.today().isoformat(),
+        # The day the timetable data was last updated, ISO 8601. Stamped in
+        # Caltrain's own timezone so it's the same whether this runs locally or on a
+        # UTC CI runner. main() may reset it to the previous value when nothing but
+        # this field would change (see below), so it tracks real changes, not runs.
+        "generatedAt": generated_date(),
         "services": [WEEKDAY, WEEKEND],
         "stations": stations,
         "transferStation": TRANSFER_STATION,
@@ -190,6 +202,21 @@ def main():
 
     if TRANSFER_STATION not in data["stations"]:
         raise SystemExit(f"transfer station {TRANSFER_STATION!r} missing from feed")
+
+    # Keep `generatedAt` pinned to the last time the timetable data actually
+    # changed. If nothing but that date would differ from the existing file, reuse
+    # the old date so we write byte-identical output — this way a re-run (e.g. the
+    # weekly CI cron) produces no diff and doesn't advance the "built on" date for a
+    # non-change.
+    if os.path.exists(OUT_PATH):
+        try:
+            with open(OUT_PATH) as f:
+                old = json.load(f)
+            without_date = lambda d: {k: v for k, v in d.items() if k != "generatedAt"}
+            if without_date(old) == without_date(data):
+                data["generatedAt"] = old.get("generatedAt", data["generatedAt"])
+        except (OSError, ValueError):
+            pass  # missing/corrupt existing file — just write a fresh one
 
     with open(OUT_PATH, "w") as f:
         json.dump(data, f, indent=1)
