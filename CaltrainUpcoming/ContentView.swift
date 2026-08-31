@@ -126,7 +126,7 @@ struct ContentView: View {
                 Text(error).foregroundStyle(.orange)
             }
             if let dataDate = scheduleDataDateText {
-                Text("Schedule updated \(dataDate)")
+                Text("Schedule built by author on \(dataDate)")
             }
             Text(scheduleStatusText)
             Text("v\(AppInfo.version)")
