@@ -1,14 +1,101 @@
-# Caltrain Upcoming — iOS app
+# Caltrain Upcoming — iOS & macOS app
 
-A small SwiftUI iPhone app that shows the next Caltrain departures between two
-stations.
+A small SwiftUI app that shows the next Caltrain departures between two
+stations. One target builds for both iPhone and Mac from the same source.
 
 ## Open & run
 1. Open `CaltrainUpcoming.xcodeproj` in Xcode 15 or later.
-2. Select an iPhone simulator (or your device) and press **Run** (⌘R).
+2. Pick a destination from the scheme menu — an iPhone simulator, your device,
+   or **My Mac** — and press **Run** (⌘R).
 3. On a device, set **Signing & Capabilities → Team** to your Apple ID first.
 
-Deployment target: iOS 16+.
+Deployment targets: iOS 16+ and macOS 13+.
+
+From the command line:
+
+```sh
+xcodebuild -scheme CaltrainUpcoming -destination 'platform=macOS' build
+xcodebuild -scheme CaltrainUpcoming -destination 'generic/platform=iOS Simulator' build
+```
+
+### One target, two platforms
+`SDKROOT = auto` with `SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx"`
+means the same target compiles twice, once per SDK, rather than there being a
+separate Mac target to keep in sync. Two consequences worth knowing:
+
+- The handful of APIs that exist on only one platform live behind shims in
+  `Platform.swift`, so the views themselves stay free of `#if os(...)`.
+- Forcing dark takes three separate pieces, because each one covers different
+  surfaces: `.preferredColorScheme(.dark)` in the scene handles SwiftUI's own
+  views on both platforms, `UIUserInterfaceStyle = Dark` (build settings, iOS
+  only) covers UIKit-provided UI such as alerts and the keyboard, and
+  `forceDarkAppearance()` sets NSApplication's appearance so the Mac title bar
+  and menu bar follow too. Dropping any one of them leaves that surface light.
+- Card backgrounds are the one place the platforms can't share a semantic color.
+  AppKit's `controlBackgroundColor` and `windowBackgroundColor` are both #1E1E1E
+  under the dark appearance — they only differ in light mode — so the cards
+  would vanish into the page. The Mac uses `underPageBackgroundColor` instead;
+  see the comment in `Platform.swift`.
+- The Mac build is sandboxed and so needs `com.apple.security.network.client`
+  (in `CaltrainUpcoming-macOS.entitlements`) to fetch the schedule. Without it
+  the download fails and the app quietly falls back to its bundled copy — the
+  footer is the tell: it keeps saying "Using built-in schedule" after a refresh.
+  iOS needs no equivalent; outgoing connections are allowed there by default.
+
+## Sharing a Mac build
+
+`build_dmg.sh` builds the Release app and wraps it in a disk image:
+
+```sh
+./build_dmg.sh
+```
+
+It writes `dist/Commute-<version>.dmg`, taking the version from
+`AppInfo.version` in `Schedule.swift` — the same string the app shows in its
+footer — so a DMG can't claim a version the app doesn't report. The image
+contains the app, the customary `Applications` symlink to drag onto, and (when
+the build isn't notarized) a Read Me explaining the first-launch step below.
+
+### Gatekeeper, and why the first launch is awkward
+
+macOS quarantines anything downloaded from the internet and refuses to open it
+unless it carries an Apple-issued signature. What the recipient sees depends
+entirely on how the app was signed:
+
+| Signing | What the recipient gets |
+| --- | --- |
+| **Developer ID + notarized** | Double-click works. No warnings. |
+| **ad-hoc** (the current default) | *"Apple cannot check it for malicious software."* They must right-click → **Open** once; macOS remembers the choice. |
+
+The script picks the best identity installed and says which one it used. With
+no **Developer ID Application** certificate on the machine it falls back to
+ad-hoc — deliberately never to an *Apple Development* certificate, which embeds
+a provisioning profile tied to specific registered Macs and so travels worse
+than an ad-hoc signature.
+
+To get the friction-free version you need a paid Apple Developer Program
+membership and a Developer ID Application certificate. Once that's installed,
+store a notarytool credential one time:
+
+```sh
+xcrun notarytool store-credentials caltrain-notary \
+  --apple-id you@example.com --team-id A7SGPP54UA --password <app-specific-password>
+```
+
+then build with:
+
+```sh
+./build_dmg.sh --notarize
+```
+
+which signs, submits to Apple, waits for the verdict, and staples the ticket to
+the DMG so it validates without a network round trip. The script refuses
+`--notarize` outright if no Developer ID certificate is present, rather than
+producing an image that only looks distributable.
+
+> The bundle identifier is still the template's `com.example.CaltrainUpcoming`.
+> That's fine for ad-hoc sharing, but wants changing to a domain you control
+> before anything is signed with a real Developer ID.
 
 ## Features
 - Default route **Blossom Hill → Sunnyvale**, fully changeable.
@@ -31,6 +118,12 @@ Deployment target: iOS 16+.
   terminate at San Jose Diridon), the app builds a **one-transfer trip at San
   Jose Diridon** so the route still returns results.
 - Uses the device clock and refreshes the countdown every 30 seconds.
+- **Dark only.** The app pins itself to the dark appearance and ignores the
+  system light/dark setting, on both platforms.
+- On the Mac the window opens at roughly phone proportions and stays resizable.
+  Refresh is the toolbar button — pull-to-refresh is a touch gesture and has no
+  Mac equivalent. The departure-time field accepts any minute as you type and
+  snaps to the 15-minute step, where iOS offers a wheel that only stops on one.
 
 ## Updating the schedule
 
@@ -125,10 +218,15 @@ Two deliberate omissions, both reported when the script runs:
 
 ## Project layout
 - `CaltrainUpcomingApp.swift` — app entry point.
+- `Platform.swift` — the iOS/macOS differences (semantic background colors,
+  navigation and search placement, Mac window sizing), behind shared names.
 - `Schedule.swift` — data model, schedule store (loads the bundled JSON), and
   the trip finder (direct + one-transfer, time/day-wrap handling).
 - `ContentView.swift` — all UI (route card, depart/time controls, slider,
   result cards, station picker).
 - `CaltrainUpcoming/schedule.json` — bundled timetable (weekday + weekend).
+- `CaltrainUpcoming/CaltrainUpcoming-macOS.entitlements` — App Sandbox and the
+  outgoing-network entitlement; applied to the macOS build only.
 - `build_schedule.py` — GTFS parser used to regenerate `schedule.json`.
+- `build_dmg.sh` — builds the Mac app and packages `dist/Commute-<version>.dmg`.
 # caltraincommute

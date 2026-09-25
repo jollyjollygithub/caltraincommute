@@ -93,15 +93,18 @@ struct ContentView: View {
         return [origin, dest].filter { !served.contains($0) }
     }
 
-    /// "Schedule updated 2 hr ago", or a note that the built-in copy is in use.
+    /// When the schedule was last downloaded, or a note that the built-in copy
+    /// is in use because no download has succeeded yet.
     private var scheduleStatusText: String {
         guard let d = store.lastUpdated else { return "Using built-in schedule" }
         let f = DateFormatter()
-        // Absolute "updated at" time of the last reload: just the clock time when
-        // it happened today, with the date prepended otherwise.
+        // Absolute time of the last reload: just the clock time when it happened
+        // today, with the date prepended otherwise. The date branch carries its
+        // own "at" before the time, so the lead-in drops the one it would
+        // otherwise duplicate.
         f.dateFormat = Calendar.current.isDateInToday(d)
-            ? "'Downloaded local schedule at' h:mm a"          // e.g. "Updated at 6:01 PM"
-            : "'Downloaded local schedule at' MMM d 'at' h:mm a"  // e.g. "Updated Aug 29 at 5:30 PM"
+            ? "'Downloaded local schedule at' h:mm a"        // "…schedule at 6:01 PM"
+            : "'Downloaded local schedule' MMM d 'at' h:mm a"  // "…schedule Aug 29 at 5:30 PM"
         return f.string(from: d)
     }
 
@@ -175,13 +178,14 @@ struct ContentView: View {
                 .padding()   // a "modifier": returns a new view wrapping this one
                              // with padding. Modifiers chain, applying outward.
             }
-            .background(Color(.systemGroupedBackground))
+            .background(Color.groupedBackground)
             // Pull down anywhere on the list to fetch the latest schedule.
+            // (Touch only — on the Mac the toolbar button below is the way in.)
             .refreshable { await store.reload() }
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationBar()
             // A visible refresh control too, for discoverability.
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { refreshButton }
+                ToolbarItem(placement: .primaryAction) { refreshButton }
             }
             // `.sheet(item:)` presents a modal when `picking` becomes non-nil.
             // `$picking` passes a *Binding* (the `$` projects the wrapped value's
@@ -236,7 +240,7 @@ struct ContentView: View {
             stationButton(label: "To", value: dest) { picking = .destination }
         }
         .padding()
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
+        .background(Color.cardBackground, in: RoundedRectangle(cornerRadius: 16))
     }
 
     // A function that returns a view. `@escaping () -> Void` is the action: a
@@ -278,11 +282,12 @@ struct ContentView: View {
                 }
             }
             .pickerStyle(.segmented)
+            .labelsHidden()   // macOS draws a segmented picker's title; iOS doesn't
             .fixedSize()
             Spacer(minLength: 0)
         }
         .padding()
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
+        .background(Color.cardBackground, in: RoundedRectangle(cornerRadius: 16))
     }
 
     private var departCard: some View {
@@ -295,6 +300,7 @@ struct ContentView: View {
                 Text("At time").tag(DepartMode.at)
             }
             .pickerStyle(.segmented)   // render as a segmented control
+            .labelsHidden()            // see serviceCard: macOS would draw the title
             .fixedSize()               // size to content rather than stretching
             // Conditional view: the DatePicker only exists when mode is `.at`.
             // `if` inside a view builder includes/excludes subtrees.
@@ -306,7 +312,7 @@ struct ContentView: View {
             Spacer(minLength: 0)   // pushes everything to the left
         }
         .padding()
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
+        .background(Color.cardBackground, in: RoundedRectangle(cornerRadius: 16))
     }
 
     // MARK: window slider
@@ -328,7 +334,7 @@ struct ContentView: View {
             Slider(value: $window, in: -90...90, step: 5)
         }
         .padding()
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
+        .background(Color.cardBackground, in: RoundedRectangle(cornerRadius: 16))
     }
 
     // MARK: results
@@ -421,7 +427,7 @@ struct ContentView: View {
             }
             .padding()
             .frame(maxWidth: .infinity)   // each button shares the row width evenly
-            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
+            .background(Color.cardBackground, in: RoundedRectangle(cornerRadius: 16))
         }
         .tint(.primary)   // use normal text color instead of the default link blue
     }
@@ -506,7 +512,7 @@ struct TripCard: View {
             }
         }
         .padding()
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
+        .background(Color.cardBackground, in: RoundedRectangle(cornerRadius: 16))
     }
 
     // The collapsed row: countdown/clock on the left, times + train badges right.
@@ -785,16 +791,18 @@ struct StationPicker: View {
                 }
             }
             // Adds the search bar bound to `query`; editing it refilters the list.
-            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always))
+            .stationSearchable(text: $query)
             .navigationTitle(title)
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationBar()
             // Toolbar with a Done button that dismisses the sheet.
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .primaryAction) {
                     Button("Done") { dismiss() }
                 }
             }
         }
+        // Gives the Mac sheet a usable size; no-op on iOS. See Platform.swift.
+        .sheetSizing(width: 360, height: 520)
     }
 
     // One station row: tapping the name picks the station, tapping the star

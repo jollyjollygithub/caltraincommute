@@ -25,8 +25,17 @@ struct CaltrainUpcomingApp: App {
     // every UIDatePicker the app creates — the same proxy pattern UIKit has
     // always used for global styling. This is why the departure-time wheel
     // steps 00/15/30/45 instead of every minute.
+    //
+    // UIKit doesn't exist in the macOS build, and AppKit's date picker offers no
+    // equivalent proxy. Nothing is lost: `pickedTimeBinding` snaps whatever the
+    // control writes to the nearest step, so the Mac field still settles on
+    // 00/15/30/45 — it just doesn't refuse the in-between minutes as you type.
     init() {
+        #if os(iOS)
         UIDatePicker.appearance().minuteInterval = TimeStep.minutes
+        #endif
+        // Dark title bar and menu bar on the Mac; no-op on iOS. See Platform.swift.
+        forceDarkAppearance()
     }
 
     // `body` is a computed property (no stored value — it runs code each time
@@ -44,6 +53,13 @@ struct CaltrainUpcomingApp: App {
                 // any descendant view can pull it out with @EnvironmentObject —
                 // a form of dependency injection, avoiding passing it down by hand.
                 .environmentObject(store)
+                // The app is dark-only: this pins SwiftUI's own views to the
+                // dark scheme on both platforms rather than following the
+                // system setting. The chrome around them is handled separately
+                // — see `forceDarkAppearance()`.
+                .preferredColorScheme(.dark)
         }
+        // Sizes the window on macOS; does nothing on iOS. See Platform.swift.
+        .macWindowDefaults()
     }
 }

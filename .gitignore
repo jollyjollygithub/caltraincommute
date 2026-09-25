@@ -3,6 +3,8 @@
 
 # Xcode
 build/
+# DMGs from build_dmg.sh
+dist/
 DerivedData/
 *.xcuserstate
 *.xcscmblueprint
