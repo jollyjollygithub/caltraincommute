@@ -93,10 +93,6 @@ the DMG so it validates without a network round trip. The script refuses
 `--notarize` outright if no Developer ID certificate is present, rather than
 producing an image that only looks distributable.
 
-> The bundle identifier is still the template's `com.example.CaltrainUpcoming`.
-> That's fine for ad-hoc sharing, but wants changing to a domain you control
-> before anything is signed with a real Developer ID.
-
 ## Features
 - Default route **Blossom Hill → Sunnyvale**, fully changeable.
 - **Weekday / Weekend** toggle. Opens on the mode matching today's date, then
