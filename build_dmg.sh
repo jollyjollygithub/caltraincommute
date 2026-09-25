@@ -80,7 +80,11 @@ fi
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"          # also gives the log below somewhere to land
 LOG="$BUILD_DIR/xcodebuild.log"
-echo "building $SCHEME (Release, macOS)…"
+# ARCHS/ONLY_ACTIVE_ARCH are forced because `-destination 'platform=macOS'`
+# otherwise narrows the build to the *building* Mac's own architecture — an
+# Apple Silicon machine would quietly produce an arm64-only app that refuses to
+# launch on Intel. A shared DMG should be universal regardless of who built it.
+echo "building $SCHEME (Release, macOS, universal)…"
 xcodebuild \
     -project "$PROJECT" -scheme "$SCHEME" \
     -configuration Release -destination 'platform=macOS' \
@@ -88,6 +92,7 @@ xcodebuild \
     CODE_SIGN_STYLE=Manual \
     CODE_SIGN_IDENTITY="$SIGN_ID" \
     PROVISIONING_PROFILE_SPECIFIER="" \
+    ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO \
     build > "$LOG" 2>&1 \
   || { echo "build failed — see $LOG" >&2; tail -20 "$LOG" >&2; exit 1; }
 
