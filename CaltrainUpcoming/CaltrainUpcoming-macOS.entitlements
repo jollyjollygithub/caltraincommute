@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Mac apps run unsandboxed unless asked; the App Store requires the
+	     sandbox, so the app opts in and then requests back the one hole it
+	     needs. iOS has no equivalent file: every iOS app is sandboxed and
+	     outgoing network access is granted by default. -->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<!-- Outgoing connections only, for fetching schedule.json. Without this
+	     the download fails inside the sandbox and the app silently falls back
+	     to its built-in copy. -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+</dict>
+</plist>
